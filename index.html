@@ -2,117 +2,136 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>ZIP → GitHub Repo (Tree API)</title>
+<title>ZIP → Shark-os</title>
 </head>
 <body>
 
-<h3>Subir ZIP a repositorio GitHub existente</h3>
+<h3>Subir ZIP a Shark-os (GitHub)</h3>
 
-<input type="text" id="owner" placeholder="owner (ej: vertiljivenson9)"><br><br>
-<input type="text" id="repo" placeholder="repo (ej: Shark-os)"><br><br>
-<input type="text" id="branch" value="main" placeholder="branch"><br><br>
-<input type="password" id="token" placeholder="GitHub Token"><br><br>
-<input type="file" id="zip" accept=".zip"><br><br>
-<button onclick="upload()">Subir proyecto</button>
+<input id="token" placeholder="GitHub Token"><br><br>
+<input id="zip" type="file" accept=".zip"><br><br>
+<button onclick="upload()">SUBIR</button>
 
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 
 <script>
+const OWNER = "vertiljivenson9";
+const REPO  = "Shark-os";
+const BRANCH = "main";
+
 async function upload() {
-  const owner = ownerInput.value.trim();
-  const repo = repoInput.value.trim();
-  const branch = branchInput.value.trim();
-  const token = tokenInput.value.trim();
-  const zipFile = zipInput.files[0];
+  try {
+    const token = document.getElementById("token").value.trim();
+    const zipFile = document.getElementById("zip").files[0];
 
-  if (!zipFile) return alert("Selecciona un ZIP");
+    if (!token || !zipFile) {
+      alert("Falta token o ZIP");
+      return;
+    }
 
-  const headers = {
-    "Authorization": "token " + token,
-    "Accept": "application/vnd.github+json"
-  };
+    const headers = {
+      "Authorization": "token " + token,
+      "Accept": "application/vnd.github+json",
+      "User-Agent": "Shark-OS-Mobile-Uploader"
+    };
 
-  // 1️⃣ Obtener SHA del último commit
-  const refRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/ref/heads/${branch}`, { headers });
-  const refData = await refRes.json();
-  const baseCommitSha = refData.object.sha;
+    // 1️⃣ Obtener referencia
+    let r = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/ref/heads/${BRANCH}`,
+      { headers }
+    );
+    if (!r.ok) throw await r.text();
+    const ref = await r.json();
 
-  const commitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits/${baseCommitSha}`, { headers });
-  const commitData = await commitRes.json();
-  const baseTreeSha = commitData.tree.sha;
+    // 2️⃣ Obtener commit base
+    r = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/commits/${ref.object.sha}`,
+      { headers }
+    );
+    if (!r.ok) throw await r.text();
+    const commit = await r.json();
 
-  // 2️⃣ Leer ZIP
-  const zip = await JSZip.loadAsync(zipFile);
-  const tree = [];
+    // 3️⃣ Leer ZIP
+    const zip = await JSZip.loadAsync(zipFile);
+    const tree = [];
 
-  for (const path in zip.files) {
-    const file = zip.files[path];
-    if (file.dir) continue;
+    for (const path in zip.files) {
+      const file = zip.files[path];
+      if (file.dir) continue;
 
-    const content = await file.async("base64");
+      const content = await file.async("base64");
 
-    // 3️⃣ Crear blob
-    const blobRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/blobs`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        content,
-        encoding: "base64"
-      })
-    });
+      r = await fetch(
+        `https://api.github.com/repos/${OWNER}/${REPO}/git/blobs`,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ content, encoding: "base64" })
+        }
+      );
+      if (!r.ok) throw await r.text();
+      const blob = await r.json();
 
-    const blobData = await blobRes.json();
+      tree.push({
+        path,
+        mode: "100644",
+        type: "blob",
+        sha: blob.sha
+      });
+    }
 
-    tree.push({
-      path,
-      mode: "100644",
-      type: "blob",
-      sha: blobData.sha
-    });
+    // 4️⃣ Crear tree
+    r = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/trees`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          base_tree: commit.tree.sha,
+          tree
+        })
+      }
+    );
+    if (!r.ok) throw await r.text();
+    const newTree = await r.json();
+
+    // 5️⃣ Commit
+    r = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/commits`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          message: "Upload ZIP from mobile",
+          tree: newTree.sha,
+          parents: [ref.object.sha]
+        })
+      }
+    );
+    if (!r.ok) throw await r.text();
+    const newCommit = await r.json();
+
+    // 6️⃣ Mover rama
+    r = await fetch(
+      `https://api.github.com/repos/${OWNER}/${REPO}/git/refs/heads/${BRANCH}`,
+      {
+        method: "PATCH",
+        headers,
+        body: JSON.stringify({
+          sha: newCommit.sha,
+          force: true
+        })
+      }
+    );
+    if (!r.ok) throw await r.text();
+
+    alert("✅ SUBIDO A Shark-os");
+
+  } catch (e) {
+    console.error(e);
+    alert("❌ ERROR:\n" + e);
   }
-
-  // 4️⃣ Crear TREE
-  const treeRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/trees`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      base_tree: baseTreeSha,
-      tree
-    })
-  });
-
-  const treeData = await treeRes.json();
-
-  // 5️⃣ Crear commit
-  const newCommitRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/commits`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      message: "Upload project from mobile (Tree API)",
-      tree: treeData.sha,
-      parents: [baseCommitSha]
-    })
-  });
-
-  const newCommit = await newCommitRes.json();
-
-  // 6️⃣ Actualizar rama
-  await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs/heads/${branch}`, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify({
-      sha: newCommit.sha
-    })
-  });
-
-  alert("Proyecto subido correctamente 🚀");
 }
-
-const ownerInput = document.getElementById("owner");
-const repoInput = document.getElementById("repo");
-const branchInput = document.getElementById("branch");
-const tokenInput = document.getElementById("token");
-const zipInput = document.getElementById("zip");
 </script>
 
 </body>
